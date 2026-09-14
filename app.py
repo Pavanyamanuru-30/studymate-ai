@@ -1,4 +1,15 @@
+import base64
+from datetime import datetime
+
 import streamlit as st
+import streamlit.components.v1 as components
+
+from config import (
+    DEFAULT_QUIZ_QUESTIONS,
+    MIN_QUIZ_QUESTIONS,
+    MAX_QUIZ_QUESTIONS,
+    MAX_HISTORY_ITEMS,
+)
 from prompts.prompts import (
     build_summary_prompt,
     build_quiz_prompt,
@@ -8,7 +19,10 @@ from prompts.prompts import (
 from utils.llm import get_gemini_response
 from utils.validation import validate_input
 
-# ── Page Config ──────────────────────────────────────────────
+
+# ═════════════════════════════════════════════════════════════
+#  PAGE CONFIG
+# ═════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="StudyMate AI",
     page_icon="📚",
@@ -16,12 +30,143 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ───────────────────────────────────────────────
+
+# ═════════════════════════════════════════════════════════════
+#  SESSION STATE
+# ═════════════════════════════════════════════════════════════
+if "results" not in st.session_state:
+    st.session_state.results = {}
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+
+# ═════════════════════════════════════════════════════════════
+#  HELPERS
+# ═════════════════════════════════════════════════════════════
+def add_to_history(feature: str, icon: str, preview: str):
+    """Record a query in the session history (most recent first)."""
+    st.session_state.history.insert(0, {
+        "feature": feature,
+        "icon": icon,
+        "preview": preview[:60] + ("..." if len(preview) > 60 else ""),
+        "time": datetime.now().strftime("%I:%M %p"),
+    })
+    # Keep only the last N items
+    st.session_state.history = st.session_state.history[:MAX_HISTORY_ITEMS]
+
+
+def word_count(text: str) -> str:
+    """Return a formatted word/character count string."""
+    if not text or not text.strip():
+        return ""
+    words = len(text.split())
+    chars = len(text)
+    return f"📊 {words} words · {chars} characters"
+
+
+def copy_button(text: str, key: str):
+    """Render a copy-to-clipboard button using JavaScript."""
+    b64 = base64.b64encode(text.encode()).decode()
+    components.html(f"""
+        <script>
+        function copyText_{key}() {{
+            const text = atob("{b64}");
+            navigator.clipboard.writeText(text).then(() => {{
+                const btn = document.getElementById('copyBtn_{key}');
+                btn.textContent = '✅ Copied!';
+                setTimeout(() => btn.textContent = '📋 Copy', 2000);
+            }});
+        }}
+        </script>
+        <button id="copyBtn_{key}" onclick="copyText_{key}()" style="
+            background: rgba(124,107,255,0.06);
+            border: 1.5px solid #21262D;
+            border-radius: 8px;
+            color: #8B949E;
+            padding: 6px 18px;
+            cursor: pointer;
+            font-size: 13px;
+            font-family: Inter, sans-serif;
+            width: 100%;
+            transition: all 0.25s ease;
+        " onmouseover="this.style.borderColor='#7C6BFF'; this.style.color='#A78BFA'"
+           onmouseout="this.style.borderColor='#21262D'; this.style.color='#8B949E'">
+            📋 Copy
+        </button>
+    """, height=42)
+
+
+def display_result(icon: str, title: str, content: str, download_name: str, key: str):
+    """Render AI output in a styled card with copy + download."""
+    st.markdown(f"""
+    <div class="result-card">
+        <div class="result-card-header">
+            <span>{icon} {title}</span>
+            <div class="result-badge">✓ Generated</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown(content)
+    st.markdown("")
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col2:
+        copy_button(content, key)
+    with col3:
+        st.download_button(
+            label="📥 Save",
+            data=content,
+            file_name=download_name,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+
+def handle_submission(
+    input_text: str,
+    prompt_fn,
+    feature_key: str,
+    feature_name: str,
+    feature_icon: str,
+    spinner_msg: str,
+    prompt_kwargs: dict | None = None,
+) -> bool:
+    """
+    Validate → build prompt → call LLM → store result.
+
+    This is the shared logic for all 4 tabs, eliminating
+    duplicated try/except and validation blocks.
+    """
+    is_valid, msg = validate_input(input_text)
+    if not is_valid:
+        st.warning(msg, icon="⚠️")
+        return False
+
+    with st.spinner(spinner_msg):
+        try:
+            kwargs = prompt_kwargs or {}
+            prompt = prompt_fn(input_text, **kwargs)
+            result = get_gemini_response(prompt)
+            st.session_state.results[feature_key] = result
+            add_to_history(feature_name, feature_icon, input_text)
+            st.toast(f"{feature_name} ready!", icon="✅")
+            return True
+        except ValueError as e:
+            st.error(str(e), icon="🔑")
+            return False
+        except Exception as e:
+            st.error(f"Something went wrong: {str(e)}", icon="❌")
+            return False
+
+
+# ═════════════════════════════════════════════════════════════
+#  CSS
+# ═════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
     /* ── Fonts ──────────────────────────────────────────── */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
@@ -41,14 +186,6 @@ st.markdown("""
     @keyframes shimmer {
         0%   { background-position: -200% center; }
         100% { background-position: 200% center; }
-    }
-    @keyframes glow {
-        0%, 100% { box-shadow: 0 0 15px rgba(124, 107, 255, 0.15); }
-        50%      { box-shadow: 0 0 30px rgba(124, 107, 255, 0.3); }
-    }
-    @keyframes slideInLeft {
-        from { opacity: 0; transform: translateX(-15px); }
-        to   { opacity: 1; transform: translateX(0); }
     }
     @keyframes pulse {
         0%, 100% { transform: scale(1); }
@@ -71,12 +208,7 @@ st.markdown("""
         content: '';
         position: absolute;
         top: 0; left: -50%; right: -50%; bottom: 0;
-        background: linear-gradient(
-            90deg,
-            transparent,
-            rgba(124, 107, 255, 0.05),
-            transparent
-        );
+        background: linear-gradient(90deg, transparent, rgba(124,107,255,0.05), transparent);
         animation: shimmer 6s ease-in-out infinite;
     }
     .hero-emoji {
@@ -148,10 +280,42 @@ st.markdown("""
         border-color: rgba(124, 107, 255, 0.3);
         transform: translateX(4px);
     }
-    .feature-item strong {
+    .feature-item strong { color: #A78BFA; }
+
+    .history-item {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid #21262D;
+        border-radius: 8px;
+        padding: 0.55rem 0.75rem;
+        margin-bottom: 0.4rem;
+        font-size: 0.78rem;
+        color: #8B949E;
+        animation: fadeIn 0.3s ease-out;
+    }
+    .history-item .h-feature {
         color: #A78BFA;
+        font-weight: 600;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .history-item .h-preview {
+        color: #6B7280;
+        margin-top: 2px;
+        font-size: 0.75rem;
+        line-height: 1.4;
+    }
+    .history-item .h-time {
+        color: #484F58;
+        font-size: 0.68rem;
+        margin-top: 2px;
     }
 
+    .divider {
+        height: 1px;
+        background: linear-gradient(90deg, transparent, #21262D, transparent);
+        margin: 0.5rem 0 1.5rem 0;
+    }
     .sidebar-footer {
         text-align: center;
         color: #484F58;
@@ -159,17 +323,6 @@ st.markdown("""
         padding: 1.5rem 0 0.5rem 0;
         border-top: 1px solid #21262D;
         margin-top: 1.5rem;
-    }
-    .sidebar-footer a {
-        color: #6B7280;
-        text-decoration: none;
-    }
-
-    /* ── Divider ────────────────────────────────────────── */
-    .divider {
-        height: 1px;
-        background: linear-gradient(90deg, transparent, #21262D, transparent);
-        margin: 0.5rem 0 1.5rem 0;
     }
 
     /* ── Tabs ───────────────────────────────────────────── */
@@ -198,7 +351,7 @@ st.markdown("""
         border: 1px solid rgba(124, 107, 255, 0.3);
     }
 
-    /* ── Section title / desc ───────────────────────────── */
+    /* ── Section ────────────────────────────────────────── */
     .sec-title {
         font-size: 1.2rem;
         font-weight: 600;
@@ -214,7 +367,7 @@ st.markdown("""
         animation: fadeInUp 0.5s ease-out;
     }
 
-    /* ── Text areas ─────────────────────────────────────── */
+    /* ── Inputs ─────────────────────────────────────────── */
     .stTextArea textarea {
         background: #0D1117 !important;
         border: 1.5px solid #21262D !important;
@@ -228,11 +381,8 @@ st.markdown("""
         border-color: #7C6BFF !important;
         box-shadow: 0 0 0 3px rgba(124, 107, 255, 0.12) !important;
     }
-    .stTextArea textarea::placeholder {
-        color: #484F58 !important;
-    }
+    .stTextArea textarea::placeholder { color: #484F58 !important; }
 
-    /* ── Text inputs ────────────────────────────────────── */
     .stTextInput input {
         background: #0D1117 !important;
         border: 1.5px solid #21262D !important;
@@ -247,7 +397,7 @@ st.markdown("""
         box-shadow: 0 0 0 3px rgba(124, 107, 255, 0.12) !important;
     }
 
-    /* ── Primary buttons ────────────────────────────────── */
+    /* ── Buttons ────────────────────────────────────────── */
     .stButton > button[kind="primary"] {
         background: linear-gradient(135deg, #7C6BFF, #6C5CE7) !important;
         border: none !important;
@@ -301,7 +451,7 @@ st.markdown("""
 
     /* ── Download button ────────────────────────────────── */
     .stDownloadButton button {
-        background: transparent !important;
+        background: rgba(124,107,255,0.06) !important;
         border: 1.5px solid #21262D !important;
         border-radius: 8px;
         color: #8B949E !important;
@@ -312,29 +462,28 @@ st.markdown("""
     .stDownloadButton button:hover {
         border-color: #7C6BFF !important;
         color: #A78BFA !important;
-        background: rgba(124, 107, 255, 0.08) !important;
     }
 
-    /* ── Slider ─────────────────────────────────────────── */
-    .stSlider [data-baseweb="slider"] [role="slider"] {
-        background: #7C6BFF;
-    }
-
-    /* ── Warning/error boxes ────────────────────────────── */
-    .stAlert {
-        border-radius: 10px;
+    /* ── Word count ─────────────────────────────────────── */
+    .word-count {
+        color: #484F58;
+        font-size: 0.78rem;
+        text-align: right;
+        margin-top: -0.5rem;
+        margin-bottom: 0.75rem;
         animation: fadeIn 0.3s ease-out;
     }
 
-    /* ── Spinner ────────────────────────────────────────── */
-    .stSpinner > div {
-        animation: fadeIn 0.3s ease-out;
-    }
+    /* ── Alerts & Spinner ───────────────────────────────── */
+    .stAlert { border-radius: 10px; animation: fadeIn 0.3s ease-out; }
+    .stSpinner > div { animation: fadeIn 0.3s ease-out; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Sidebar ──────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ═════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("""
     <div class="sidebar-header">
@@ -356,9 +505,25 @@ with st.sidebar:
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
+    # ── Usage History ────────────────────────────────────
+    st.markdown("##### Recent Activity")
+    if st.session_state.history:
+        for item in st.session_state.history:
+            st.markdown(f"""
+            <div class="history-item">
+                <div class="h-feature">{item['icon']} {item['feature']}</div>
+                <div class="h-preview">{item['preview']}</div>
+                <div class="h-time">{item['time']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.caption("No activity yet — try a feature!")
+
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
     st.markdown("##### Tips")
-    st.caption("📌  Detailed notes produce better AI results")
-    st.caption("💾  Download your results for later review")
+    st.caption("📌  Detailed notes give better results")
+    st.caption("💾  Save or copy results for later review")
     st.caption("🎯  One topic per request works best")
 
     st.markdown("""
@@ -369,7 +534,9 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 
-# ── Hero ─────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+#  HERO
+# ═════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
     <div class="hero-emoji">📚</div>
@@ -379,31 +546,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Helper ───────────────────────────────────────────────────
-def display_result(icon: str, title: str, content: str, download_name: str):
-    """Render AI output in a styled dark card with download option."""
-    st.markdown(f"""
-    <div class="result-card">
-        <div class="result-card-header">
-            <span>{icon} {title}</span>
-            <div class="result-badge">✓ Generated</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown(content)
-    st.markdown("")
-    col1, col2 = st.columns([3.5, 1])
-    with col2:
-        st.download_button(
-            label="📥 Save",
-            data=content,
-            file_name=download_name,
-            mime="text/markdown",
-            use_container_width=True,
-        )
-
-
-# ── Tabs ─────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+#  TABS
+# ═════════════════════════════════════════════════════════════
 tab1, tab2, tab3, tab4 = st.tabs(
     ["📝 Summarize", "❓ Quiz", "💡 Explain", "✍️ Improve"]
 )
@@ -413,113 +558,96 @@ with tab1:
     st.markdown("")
     st.markdown('<div class="sec-title">📝 Note Summarizer</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sec-desc">'
-        "Paste your lecture notes and get an organized summary with key concepts."
-        "</div>",
+        '<div class="sec-desc">Paste your lecture notes and get an organized summary with key concepts.</div>',
         unsafe_allow_html=True,
     )
 
     summary_notes = st.text_area(
-        "notes",
-        height=200,
-        placeholder="Paste your lecture notes here...",
-        key="summary_input",
-        label_visibility="collapsed",
+        "notes", height=200, placeholder="Paste your lecture notes here...",
+        key="summary_input", label_visibility="collapsed",
     )
+    wc = word_count(summary_notes)
+    if wc:
+        st.markdown(f'<div class="word-count">{wc}</div>', unsafe_allow_html=True)
 
     if st.button("✨  Summarize Notes", type="primary", use_container_width=True, key="btn_sum"):
-        is_valid, msg = validate_input(summary_notes)
-        if not is_valid:
-            st.warning(msg, icon="⚠️")
-        else:
-            with st.spinner("Analyzing your notes..."):
-                try:
-                    result = get_gemini_response(build_summary_prompt(summary_notes))
-                    st.toast("Summary ready!", icon="✅")
-                    display_result("📋", "Summary", result, "summary.md")
-                except ValueError as e:
-                    st.error(str(e), icon="🔑")
-                except Exception as e:
-                    st.error(f"Something went wrong: {str(e)}", icon="❌")
+        handle_submission(
+            summary_notes, build_summary_prompt,
+            feature_key="summary", feature_name="Summary",
+            feature_icon="📝", spinner_msg="Analyzing your notes...",
+        )
+
+    if "summary" in st.session_state.results:
+        display_result("📋", "Summary", st.session_state.results["summary"], "summary.md", "sum")
 
 # ── Tab 2: Quiz ──────────────────────────────────────────────
 with tab2:
     st.markdown("")
     st.markdown('<div class="sec-title">❓ Quiz Generator</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sec-desc">'
-        "Turn your notes into a practice quiz for active recall."
-        "</div>",
+        '<div class="sec-desc">Turn your notes into a practice quiz for active recall.</div>',
         unsafe_allow_html=True,
     )
 
     quiz_notes = st.text_area(
-        "notes",
-        height=200,
-        placeholder="Paste the notes you want to be quizzed on...",
-        key="quiz_input",
-        label_visibility="collapsed",
+        "notes", height=200, placeholder="Paste the notes you want to be quizzed on...",
+        key="quiz_input", label_visibility="collapsed",
+    )
+    wc = word_count(quiz_notes)
+    if wc:
+        st.markdown(f'<div class="word-count">{wc}</div>', unsafe_allow_html=True)
+
+    num_q = st.slider(
+        "Number of questions",
+        MIN_QUIZ_QUESTIONS, MAX_QUIZ_QUESTIONS, DEFAULT_QUIZ_QUESTIONS,
+        key="quiz_slider",
     )
 
-    num_q = st.slider("Number of questions", 3, 10, 5, key="quiz_slider")
-
     if st.button("🧠  Generate Quiz", type="primary", use_container_width=True, key="btn_quiz"):
-        is_valid, msg = validate_input(quiz_notes)
-        if not is_valid:
-            st.warning(msg, icon="⚠️")
-        else:
-            with st.spinner(f"Creating {num_q} questions..."):
-                try:
-                    result = get_gemini_response(build_quiz_prompt(quiz_notes, num_q))
-                    st.toast("Quiz ready!", icon="✅")
-                    display_result("📝", "Your Quiz", result, "quiz.md")
-                except ValueError as e:
-                    st.error(str(e), icon="🔑")
-                except Exception as e:
-                    st.error(f"Something went wrong: {str(e)}", icon="❌")
+        handle_submission(
+            quiz_notes, build_quiz_prompt,
+            feature_key="quiz", feature_name="Quiz",
+            feature_icon="❓", spinner_msg=f"Creating {num_q} questions...",
+            prompt_kwargs={"num_questions": num_q},
+        )
+
+    if "quiz" in st.session_state.results:
+        display_result("📝", "Your Quiz", st.session_state.results["quiz"], "quiz.md", "quiz")
 
 # ── Tab 3: Explain ───────────────────────────────────────────
 with tab3:
     st.markdown("")
     st.markdown('<div class="sec-title">💡 Concept Explainer</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sec-desc">'
-        "Enter any topic and get a simple explanation with examples."
-        "</div>",
+        '<div class="sec-desc">Enter any topic and get a simple explanation with examples.</div>',
         unsafe_allow_html=True,
     )
 
     concept = st.text_area(
-        "concept",
-        height=140,
+        "concept", height=140,
         placeholder="e.g. What is photosynthesis?\ne.g. Explain recursion with an example\ne.g. How does TCP/IP work?",
-        key="explain_input",
-        label_visibility="collapsed",
+        key="explain_input", label_visibility="collapsed",
     )
+    wc = word_count(concept)
+    if wc:
+        st.markdown(f'<div class="word-count">{wc}</div>', unsafe_allow_html=True)
 
     if st.button("💡  Explain This", type="primary", use_container_width=True, key="btn_exp"):
-        is_valid, msg = validate_input(concept)
-        if not is_valid:
-            st.warning(msg, icon="⚠️")
-        else:
-            with st.spinner("Breaking it down..."):
-                try:
-                    result = get_gemini_response(build_explain_prompt(concept))
-                    st.toast("Explanation ready!", icon="✅")
-                    display_result("💡", "Explanation", result, "explanation.md")
-                except ValueError as e:
-                    st.error(str(e), icon="🔑")
-                except Exception as e:
-                    st.error(f"Something went wrong: {str(e)}", icon="❌")
+        handle_submission(
+            concept, build_explain_prompt,
+            feature_key="explain", feature_name="Explanation",
+            feature_icon="💡", spinner_msg="Breaking it down...",
+        )
+
+    if "explain" in st.session_state.results:
+        display_result("💡", "Explanation", st.session_state.results["explain"], "explanation.md", "exp")
 
 # ── Tab 4: Improve ───────────────────────────────────────────
 with tab4:
     st.markdown("")
     st.markdown('<div class="sec-title">✍️ Answer Improver</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sec-desc">'
-        "Paste your written answer and get a polished version with improvement tips."
-        "</div>",
+        '<div class="sec-desc">Paste your written answer and get a polished version with tips.</div>',
         unsafe_allow_html=True,
     )
 
@@ -530,24 +658,20 @@ with tab4:
     )
 
     answer = st.text_area(
-        "answer",
-        height=200,
-        placeholder="Paste your written answer here...",
-        key="improve_input",
-        label_visibility="collapsed",
+        "answer", height=200, placeholder="Paste your written answer here...",
+        key="improve_input", label_visibility="collapsed",
     )
+    wc = word_count(answer)
+    if wc:
+        st.markdown(f'<div class="word-count">{wc}</div>', unsafe_allow_html=True)
 
     if st.button("✍️  Improve My Answer", type="primary", use_container_width=True, key="btn_imp"):
-        is_valid, msg = validate_input(answer)
-        if not is_valid:
-            st.warning(msg, icon="⚠️")
-        else:
-            with st.spinner("Polishing your answer..."):
-                try:
-                    result = get_gemini_response(build_improve_prompt(answer, question))
-                    st.toast("Improved!", icon="✅")
-                    display_result("✍️", "Improved Answer", result, "improved_answer.md")
-                except ValueError as e:
-                    st.error(str(e), icon="🔑")
-                except Exception as e:
-                    st.error(f"Something went wrong: {str(e)}", icon="❌")
+        handle_submission(
+            answer, build_improve_prompt,
+            feature_key="improve", feature_name="Improved Answer",
+            feature_icon="✍️", spinner_msg="Polishing your answer...",
+            prompt_kwargs={"question": question},
+        )
+
+    if "improve" in st.session_state.results:
+        display_result("✍️", "Improved Answer", st.session_state.results["improve"], "improved_answer.md", "imp")
