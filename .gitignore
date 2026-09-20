@@ -10,9 +10,9 @@ __pycache__/
 venv/
 .venv/
 
-# Streamlit
-.streamlit/
-
 # IDE
 .vscode/
 .idea/
+
+# Word temp lock files
+~$*
