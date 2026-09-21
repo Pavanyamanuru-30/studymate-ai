@@ -6,7 +6,7 @@ across multiple files.
 """
 
 # ── LLM Settings ─────────────────────────────────────────────
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-3.6-flash"
 MAX_RETRIES = 2
 RETRY_DELAY_SECONDS = 1.0
 
