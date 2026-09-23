@@ -549,8 +549,8 @@ st.markdown("""
 # ═════════════════════════════════════════════════════════════
 #  TABS
 # ═════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📝 Summarize", "❓ Quiz", "💡 Explain", "✍️ Improve"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📝 Summarize", "❓ Quiz", "💡 Explain", "✍️ Improve", "📚 Doc Q&A"]
 )
 
 # ── Tab 1: Summarize ─────────────────────────────────────────
@@ -675,3 +675,70 @@ with tab4:
 
     if "improve" in st.session_state.results:
         display_result("✍️", "Improved Answer", st.session_state.results["improve"], "improved_answer.md", "imp")
+
+
+# ── Tab 5: Doc Q&A (RAG) ─────────────────────────────────────
+with tab5:
+    st.markdown("")
+    st.markdown('<div class="sec-title">📚 Document Q&A</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sec-desc">Upload a PDF and ask questions directly based on its content (RAG).</div>',
+        unsafe_allow_html=True,
+    )
+
+    uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"], key="pdf_uploader")
+
+    if uploaded_file is not None:
+        if "pdf_index" not in st.session_state or st.session_state.get("pdf_name") != uploaded_file.name:
+            with st.spinner("Processing document (extracting, chunking, embedding)..."):
+                from utils.rag import extract_text_from_pdf, chunk_text, get_embeddings, create_faiss_index
+                pdf_bytes = uploaded_file.read()
+                raw_text = extract_text_from_pdf(pdf_bytes)
+                if not raw_text.strip():
+                    st.error("No extractable text found in this PDF.")
+                else:
+                    chunks = chunk_text(raw_text)
+                    embeddings = get_embeddings(chunks)
+                    index = create_faiss_index(embeddings)
+                    
+                    st.session_state["pdf_index"] = index
+                    st.session_state["pdf_chunks"] = chunks
+                    st.session_state["pdf_name"] = uploaded_file.name
+                    st.success("Document processed and indexed successfully!")
+        
+        if "pdf_index" in st.session_state:
+            st.markdown("##### Ask a question about your document:")
+            query = st.text_input("Question", placeholder="e.g. What are the key takeaways from this paper?", key="rag_query")
+            
+            if st.button("🔍 Search & Answer", type="primary", use_container_width=True, key="btn_rag"):
+                if not query.strip():
+                    st.warning("Please enter a question.")
+                else:
+                    with st.spinner("Searching document and generating answer..."):
+                        from utils.rag import search_index
+                        from prompts.prompts import build_rag_prompt
+                        from utils.llm import get_gemini_response
+                        
+                        retrieved_chunks = search_index(query, st.session_state["pdf_index"], st.session_state["pdf_chunks"])
+                        context = "\n\n".join(retrieved_chunks)
+                        
+                        prompt = build_rag_prompt(query, context)
+                        try:
+                            answer = get_gemini_response(prompt)
+                            st.session_state.results["rag"] = {"answer": answer, "context": retrieved_chunks}
+                            
+                            add_to_history("Doc Q&A", "📚", query)
+                            st.toast("Answer generated!", icon="✅")
+                        except Exception as e:
+                            st.error(f"Something went wrong: {str(e)}", icon="❌")
+
+            if "rag" in st.session_state.results:
+                rag_res = st.session_state.results["rag"]
+                st.markdown("### Answer")
+                st.markdown(rag_res["answer"])
+                
+                with st.expander("🔍 View Retrieved Source Context"):
+                    for i, chunk in enumerate(rag_res["context"]):
+                        st.markdown(f"**Source {i+1}:**")
+                        st.caption(chunk)
+                        st.markdown("---")

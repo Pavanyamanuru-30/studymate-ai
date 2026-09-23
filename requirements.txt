@@ -2,3 +2,7 @@ streamlit
 google-genai
 python-dotenv
 tenacity
+
+PyPDF2==3.0.1
+faiss-cpu==1.15.1
+numpy

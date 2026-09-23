@@ -130,3 +130,25 @@ Your task:
 ---
 
 **Improved Answer:**"""
+
+def build_rag_prompt(query: str, context: str) -> str:
+    """
+    Build a structured prompt for grounded document Q&A.
+    """
+    return f"""You are a helpful, accurate study assistant. 
+Your task is to answer the student's question based strictly on the provided document context.
+
+# INSTRUCTIONS:
+1. Answer the question using ONLY the provided context below.
+2. If the context does not contain the answer, politely state: "I cannot find the answer to this in the provided document." Do not guess or use outside knowledge.
+3. Be concise, clear, and professional.
+
+# DOCUMENT CONTEXT:
+---
+{context}
+---
+
+# STUDENT QUESTION:
+---
+{query}
+---"""
