@@ -680,33 +680,35 @@ with tab4:
 # ── Tab 5: Doc Q&A (RAG) ─────────────────────────────────────
 with tab5:
     st.markdown("")
-    st.markdown('<div class="sec-title">📚 Document Q&A</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-title">📚 Document Q&A (Advanced RAG API)</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sec-desc">Upload a PDF and ask questions directly based on its content (RAG).</div>',
+        '<div class="sec-desc">Upload a PDF and let our Agentic LangGraph Backend answer your questions.</div>',
         unsafe_allow_html=True,
     )
+
+    import os
+    import requests
+    BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8002").strip()
 
     uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"], key="pdf_uploader")
 
     if uploaded_file is not None:
-        if "pdf_index" not in st.session_state or st.session_state.get("pdf_name") != uploaded_file.name:
-            with st.spinner("Processing document (extracting, chunking, embedding)..."):
-                from utils.rag import extract_text_from_pdf, chunk_text, get_embeddings, create_faiss_index
-                pdf_bytes = uploaded_file.read()
-                raw_text = extract_text_from_pdf(pdf_bytes)
-                if not raw_text.strip():
-                    st.error("No extractable text found in this PDF.")
-                else:
-                    chunks = chunk_text(raw_text)
-                    embeddings = get_embeddings(chunks)
-                    index = create_faiss_index(embeddings)
-                    
-                    st.session_state["pdf_index"] = index
-                    st.session_state["pdf_chunks"] = chunks
-                    st.session_state["pdf_name"] = uploaded_file.name
-                    st.success("Document processed and indexed successfully!")
+        if "doc_id" not in st.session_state or st.session_state.get("pdf_name") != uploaded_file.name:
+            with st.spinner("Sending document to FastAPI Backend for ingestion..."):
+                try:
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+                    response = requests.post(f"{BACKEND_URL}/api/v1/upload", files=files)
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.session_state["doc_id"] = data["document_id"]
+                        st.session_state["pdf_name"] = uploaded_file.name
+                        st.success(f"Document processed! Indexed {data['chunks_indexed']} chunks in vector DB.")
+                    else:
+                        st.error(f"Backend Error: {response.text}")
+                except Exception as e:
+                    st.error(f"Failed to connect to backend: {e}")
         
-        if "pdf_index" in st.session_state:
+        if "doc_id" in st.session_state:
             st.markdown("##### Ask a question about your document:")
             query = st.text_input("Question", placeholder="e.g. What are the key takeaways from this paper?", key="rag_query")
             
@@ -714,31 +716,31 @@ with tab5:
                 if not query.strip():
                     st.warning("Please enter a question.")
                 else:
-                    with st.spinner("Searching document and generating answer..."):
-                        from utils.rag import search_index
-                        from prompts.prompts import build_rag_prompt
-                        from utils.llm import get_gemini_response
-                        
-                        retrieved_chunks = search_index(query, st.session_state["pdf_index"], st.session_state["pdf_chunks"])
-                        context = "\n\n".join(retrieved_chunks)
-                        
-                        prompt = build_rag_prompt(query, context)
+                    with st.spinner("Agent is retrieving context and generating answer..."):
                         try:
-                            answer = get_gemini_response(prompt)
-                            st.session_state.results["rag"] = {"answer": answer, "context": retrieved_chunks}
+                            payload = {"query": query, "document_id": st.session_state["doc_id"]}
+                            res = requests.post(f"{BACKEND_URL}/api/v1/query", json=payload)
                             
-                            add_to_history("Doc Q&A", "📚", query)
-                            st.toast("Answer generated!", icon="✅")
+                            if res.status_code == 200:
+                                result = res.json()
+                                st.session_state.results["rag"] = result
+                                
+                                add_to_history("Doc Q&A", "📚", query)
+                                st.toast("Answer generated!", icon="✅")
+                            else:
+                                st.error(f"Backend Error: {res.text}")
                         except Exception as e:
-                            st.error(f"Something went wrong: {str(e)}", icon="❌")
+                            st.error(f"Failed to connect to backend: {e}")
 
             if "rag" in st.session_state.results:
                 rag_res = st.session_state.results["rag"]
                 st.markdown("### Answer")
                 st.markdown(rag_res["answer"])
                 
+                st.caption(f"**Agent Confidence:** {rag_res.get('confidence', 'Unknown')}")
+                
                 with st.expander("🔍 View Retrieved Source Context"):
-                    for i, chunk in enumerate(rag_res["context"]):
+                    for i, chunk in enumerate(rag_res.get("sources", [])):
                         st.markdown(f"**Source {i+1}:**")
                         st.caption(chunk)
                         st.markdown("---")
